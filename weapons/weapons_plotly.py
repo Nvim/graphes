@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import plotly.graph_objs as go
 import plotly.offline as pyo
+import graphviz
 
 # Obtenir l'arbre de toutes les dépendances d'armes pour chaque arme
 
@@ -13,114 +14,98 @@ def query(weapon, conn):
         print("no conn!")
         exit()
     query = f"""
-    SELECT w.id, w.rarity, w.attack, wt.name, w.previous_weapon_id, w.craftable
+    SELECT w.id, w.rarity, w.attack, wt.name, w.previous_weapon_id, w.craftable, w.category
         FROM weapon w
             JOIN weapon_text wt USING (id)
             LEFT OUTER JOIN weapon_ammo wa ON w.ammo_id = wa.id
         WHERE w.weapon_type = '{weapon}'
         AND wt.lang_id = 'en'
+        and w.category is null
     """
     # Execute the query
     cursor = conn.cursor()
     cursor.execute(query)
     return cursor.fetchall()
 
+def make_node_text(node):
+    return f"<b>{node["name"]}</b><br><b>*Rarity:</b> {node["rarity"]}<br><b>*Attack:</b> {node["attack"]}"
 
-def make_graph(weapon_name, conn):
-
+def make_graph(weapon_name, conn, layoutfunc=nx.spring_layout):
     # get data:
     rows = query(weapon_name, conn)
 
     # graph:
     G = nx.DiGraph()
-    for id, rarity, attack, weapon, previous_weapon_id, craftable in rows:
+    for id, rarity, attack, weapon, previous_weapon_id, craftable, category in rows:
         # Ensure the 'name' attribute is being added here
-        G.add_node(id, rarity=rarity, attack=attack, name=weapon, craftable=craftable)
+        G.add_node(id, rarity=rarity, attack=attack, name=weapon, craftable=craftable, category=category)
         if previous_weapon_id:
             G.add_edge(previous_weapon_id, id)
 
     # Generate positions for each node
-    pos = nx.spring_layout(G)
+    pos = layoutfunc(G)
+    # pos = nx.nx_agraph.graphviz_layout(G)
 
-    # Prepare data for Plotly
+    # Prepare node and edge traces for Plotly
+    node_x = [pos[node][0] for node in G.nodes()]
+    node_y = [pos[node][1] for node in G.nodes()]
+    # node_text = [G.nodes[node]['name'] for node in G.nodes()]
+    node_text = [make_node_text(G.nodes[node]) for node in G.nodes()]
+    node_hoverinfo = 'text'
     edge_x = []
     edge_y = []
     for edge in G.edges():
         x0, y0 = pos[edge[0]]
         x1, y1 = pos[edge[1]]
-        edge_x.extend([x0, x1, None])
-        edge_y.extend([y0, y1, None])
+        edge_x.append(x0)
+        edge_x.append(x1)
+        edge_x.append(None)
+        edge_y.append(y0)
+        edge_y.append(y1)
+        edge_y.append(None)
 
-    edge_trace = go.Scatter(
-        x=edge_x,
-        y=edge_y,
-        line=dict(width=0.5, color="#888"),
-        hoverinfo="none",
-        mode="lines",
-    )
+    # Prepare node colors based on the 'craftable' attribute
+    node_colors = ['red' if G.nodes[node]['craftable'] else 'blue' for node in G.nodes()]
 
-    node_x = []
-    node_y = []
-    for node in G.nodes():
-        x, y = pos[node]
-        node_x.append(x)
-        node_y.append(y)
-
-    node_trace = go.Scatter(
-        x=node_x,
-        y=node_y,
-        mode="markers",
-        hoverinfo="text",
-        marker=dict(
-            showscale=True,
-            colorscale="YlGnBu",
-            size=10,
-            color=list(dict(G.degree()).values()),
-            colorbar=dict(
-                thickness=15,
-                title="Node Connections",
-                xanchor="left",
-                titleside="right",
-            ),
-            line_width=2,
-        ),
-    )
-
-    # Add node labels
-    node_text = []
-    for node in G.nodes():
-        # Accessing the 'name' attribute of each node
-        node_text.append(G.nodes[node]["name"])
-        print(G.nodes[node])
-
-    node_trace.marker.color = "blue"
-    node_trace.text = node_text
-
-    # Create figure
+    # Create Plotly figure
     fig = go.Figure(
-        data=[edge_trace, node_trace],
+        data =[
+            go.Scatter(
+                x=node_x, y=node_y,
+                mode='markers',
+                text=node_text,
+                hoverinfo=node_hoverinfo,
+                marker=dict(
+                    showscale=False,
+                    size=10,
+                    line_width=2,
+                    color=node_colors,
+                ),
+            ),
+            go.Scatter(
+                x=edge_x, y=edge_y,
+                mode='lines',
+                line=dict(width=0.5, color='#888'),
+                hoverinfo='none'
+            )
+        ],
         layout=go.Layout(
             title="<br>Monster Hunter World " + weapon_name + " Tree",
-            titlefont_size=16,
             showlegend=False,
-            hovermode="closest",
+            hovermode='closest',
             margin=dict(b=20, l=5, r=5, t=40),
-            annotations=[
-                dict(
-                    showarrow=False,
-                    xref="paper",
-                    yref="paper",
-                    x=0.005,
-                    y=-0.002,
-                )
-            ],
             xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        ),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
+        )
     )
 
-    # Save to HTML
+    # Save the figure to a HTML file
     pyo.plot(fig, filename=f"{output_dir}/mhw_{weapon_name}_tree.html")
+
+    # Draw the graph:
+    nx.draw(G, with_labels=True, pos=pos)
+    plt.savefig(f"{output_dir}/mhw_{weapon_name}_tree.png")
+    plt.close()
 
 
 output_dir = "./output"
@@ -141,9 +126,10 @@ weapon_names = {
     "bow",
 }
 
-conn = sqlite3.connect("mhw.db")  # Replace with your database connection
-for weapon in weapon_names:
-    print(f"* Weapon: {weapon}")
-    make_graph(weapon, conn)
+conn = sqlite3.connect("../mhw.db")  # Replace with your database connection
+# for weapon in weapon_names:
+#     print(f"* Weapon: {weapon}")
+#     make_graph(weapon, conn, nx.nx_agraph.graphviz_layout)
+make_graph("great-sword", conn, nx.nx_agraph.graphviz_layout)
 
 conn.close()

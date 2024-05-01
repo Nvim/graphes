@@ -190,7 +190,7 @@ def make_graph(item_id, conn):
 output_dir = "./output"
 item_ids = {"115"}
 
-conn = sqlite3.connect("mhw.db")  # Replace with your database connection
+conn = sqlite3.connect("../mhw.db")  # Replace with your database connection
 for item in item_ids:
     print(f"* Item: {item}")
     make_graph(item, conn)
