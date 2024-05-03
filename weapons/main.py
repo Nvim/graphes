@@ -1,6 +1,9 @@
 from weapons_plotly import make_weapon_graph
 from all_recipe_items import make_item_graph
 import sqlite3
+import dash
+from dash import dcc
+from dash import html
 
 output_dir = "./output"
 weapon_names = {
@@ -29,7 +32,11 @@ def main():
     # for weapon in weapon_names:
     #     print(f"* Weapon: {weapon}")
     #     make_weapon_graph(weapon, conn, output_dir)
-    make_weapon_graph("great-sword", conn, output_dir)
+    fig = make_weapon_graph("great-sword", conn, output_dir)
+    app = dash.Dash()
+    app.layout = html.Div([dcc.Graph(figure=fig)])
+
+    app.run_server(debug=True, use_reloader=False)
     
     conn.close()
 
