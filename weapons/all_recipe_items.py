@@ -15,8 +15,8 @@ def loadItemLocations(item, conn):
         exit()
 
     query = f"""
-        SELECT  lt.name source, li.percentage as odd, li.location_id,
-        li.rank, li.area, li.stack, li.nodes
+        SELECT  lt.name source, li.percentage as odd, li.rank rank, li.location_id,
+        li.area, li.stack, li.nodes
         FROM location_item li
             JOIN location_text lt
                 ON lt.id = li.location_id
@@ -36,7 +36,7 @@ def loadItemQuestRewards(item, conn):
         exit()
 
     query = f"""
-        SELECT qt.name source, r.percentage odd, r.quest_id, q.category quest_category, q.stars quest_stars, q.stars_raw quest_stars_raw,
+        SELECT qt.name source, r.percentage odd, q.stars_raw rank, r.quest_id, q.category quest_category, q.stars quest_stars, 
              q.quest_type quest_quest_type, qt.objective quest_objective,
             qt.description quest_description, q.location_id quest_location_id, q.zenny quest_zenny,
             r.stack
@@ -62,8 +62,8 @@ def loadItemMonsterRewards(item, conn):
         exit()
 
     query = f"""
-        SELECT  mtext.name source, r.percentage odd, r.monster_id, m.size monster_size,
-            rtext.name condition_name, r.rank, r.stack 
+        SELECT  mtext.name source, r.percentage odd, r.rank rank, r.monster_id, m.size monster_size,
+            rtext.name condition_name, r.stack 
         FROM monster_reward r
             JOIN monster_reward_condition_text rtext
                 ON rtext.id = r.condition_id
@@ -81,118 +81,124 @@ def loadItemMonsterRewards(item, conn):
     cursor.execute(query)
     return cursor.fetchall()
 
+def get_item_list(item_id, conn):
+    monsterRows = loadItemMonsterRewards(item_id, conn)
+    monsterRows = [[row[0], row[1]] for row in monsterRows]
+    for row in monsterRows:
+        row.append("Monster")
 
-def make_graph(item_id, conn):
+    locationRows = loadItemLocations(item_id, conn)
+    locationRows = [[row[0], row[1]] for row in locationRows]
+    for row in locationRows:
+        row.append("Location")
+
+    questRewardRows = loadItemQuestRewards(item_id, conn)
+    questRewardRows = [[row[0], row[1]] for row in questRewardRows]
+    for row in questRewardRows:
+        row.append("Quest Reward")
+
+    rows = monsterRows + locationRows  + questRewardRows
+    print(rows)
+    return rows
+
+
+def make_node_text(node):
+    return f"<br><b>*Source:</b> {node["source"]}<br><b>*Odd:</b> {node["odd"]} <br> <b>* Type: </b> {node["kind"]}"
+
+def make_item_graph(item_id, conn, output_dir):
 
     # get data:
     monsterRows = loadItemMonsterRewards(item_id, conn)
     monsterRows = [[row[0], row[1]] for row in monsterRows]
+    for row in monsterRows:
+        row.append("Monster")
 
     locationRows = loadItemLocations(item_id, conn)
     locationRows = [[row[0], row[1]] for row in locationRows]
+    for row in locationRows:
+        row.append("Location")
 
     questRewardRows = loadItemQuestRewards(item_id, conn)
     questRewardRows = [[row[0], row[1]] for row in questRewardRows]
+    for row in questRewardRows:
+        row.append("Quest Reward")
 
-    rows = monsterRows + locationRows  # + questRewardRows
+    rows = monsterRows + locationRows  + questRewardRows
 
     # graph:
     G = nx.DiGraph()
-    G.add_node(item_id)
-    for source, odd in rows:
-        G.add_node(source)
-        G.add_edge(item_id, source, weight=odd)
+    G.add_node(item_id, source="oui", odd="oui", kind="oui")
+    id = 0
+    for source, odd, kind in rows:
+        G.add_node(id, source=source, odd=odd, kind=kind)
+        G.add_edge(id, item_id)
+        id+=1
 
     # Generate positions for each node
     pos = nx.spring_layout(G)
 
-    # Prepare data for Plotly
+    # Prepare node and edge traces for Plotly
+    node_x = [pos[node][0] for node in G.nodes()]
+    node_y = [pos[node][1] for node in G.nodes()]
+    # node_text = [G.nodes[node]['name'] for node in G.nodes()]
+    node_text = [make_node_text(G.nodes[node]) for node in G.nodes()]
+    node_hoverinfo = 'text'
     edge_x = []
     edge_y = []
     for edge in G.edges():
         x0, y0 = pos[edge[0]]
         x1, y1 = pos[edge[1]]
-        edge_x.extend([x0, x1, None])
-        edge_y.extend([y0, y1, None])
+        edge_x.append(x0)
+        edge_x.append(x1)
+        edge_x.append(None)
+        edge_y.append(y0)
+        edge_y.append(y1)
+        edge_y.append(None)
 
-    edge_trace = go.Scatter(
-        x=edge_x,
-        y=edge_y,
-        line=dict(width=0.5, color="#888"),
-        hoverinfo="none",
-        mode="lines",
-    )
 
-    node_x = []
-    node_y = []
-    for node in G.nodes():
-        x, y = pos[node]
-        node_x.append(x)
-        node_y.append(y)
+    # for node in G.nodes:
+    #     if node["kind"] == "Monster":
+    #         color = 'red'
+    #     if node["kind"] == "Location":
+    #         color = 'green'
+    #     if node["kind"] == "Quest Reward":
+    #         color = 'purple'
+    #     else:
+    #         color = 'blue'
 
-    node_trace = go.Scatter(
-        x=node_x,
-        y=node_y,
-        mode="markers",
-        hoverinfo="text",
-        marker=dict(
-            showscale=True,
-            colorscale="YlGnBu",
-            size=10,
-            color=list(dict(G.degree()).values()),
-            colorbar=dict(
-                thickness=15,
-                title="Node Connections",
-                xanchor="left",
-                titleside="right",
-            ),
-            line_width=2,
-        ),
-    )
+    node_colors = ['red' if G.nodes[node]['kind'] == 'Monster' else 'green' if G.nodes[node]['kind'] == 'Location' else 'purple' if G.nodes[node]['kind'] == 'Quest Reward' else 'blue' for node in G.nodes()]
 
-    # Add node labels
-    node_text = []
-    for node in G.nodes():
-        # Accessing the 'name' attribute of each node
-        node_text.append(f"Item #{item_id}")
-        # print(G.nodes[node])
-
-    # node_trace.marker.color = "blue"
-    node_trace.text = node_text
-
-    # Create figure
+    # Create Plotly figure
     fig = go.Figure(
-        data=[edge_trace, node_trace],
+        data =[
+            go.Scatter(
+                x=node_x, y=node_y,
+                mode='markers',
+                text=node_text,
+                hoverinfo=node_hoverinfo,
+                marker=dict(
+                    showscale=False,
+                    size=10,
+                    line_width=2,
+                    color=node_colors,
+                ),
+            ),
+            go.Scatter(
+                x=edge_x, y=edge_y,
+                mode='lines',
+                line=dict(width=0.5, color='#888'),
+                hoverinfo='none'
+            )
+        ],
         layout=go.Layout(
-            title="<br>Item " + item_id + " Tree",
-            titlefont_size=16,
+            title="<br>Monster Hunter World " + item_id + " Tree",
             showlegend=False,
-            hovermode="closest",
+            hovermode='closest',
             margin=dict(b=20, l=5, r=5, t=40),
-            annotations=[
-                dict(
-                    showarrow=False,
-                    xref="paper",
-                    yref="paper",
-                    x=0.005,
-                    y=-0.002,
-                )
-            ],
             xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        ),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
+        )
     )
 
     # Save to HTML
     pyo.plot(fig, filename=f"{output_dir}/mhw_item_{item_id}_tree.html")
-
-
-output_dir = "./output"
-item_ids = {"115"}
-
-conn = sqlite3.connect("../mhw.db")  # Replace with your database connection
-for item in item_ids:
-    print(f"* Item: {item}")
-    make_graph(item, conn)
-
-conn.close()

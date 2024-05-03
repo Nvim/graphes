@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import plotly.graph_objs as go
 import plotly.offline as pyo
+import plotly
+from all_recipe_items import get_item_list
 import graphviz
 
 # Obtenir l'arbre de toutes les dépendances d'armes pour chaque arme
@@ -27,10 +29,41 @@ def query(weapon, conn):
     cursor.execute(query)
     return cursor.fetchall()
 
-def make_node_text(node):
-    return f"<b>{node["name"]}</b><br><b>*Rarity:</b> {node["rarity"]}<br><b>*Attack:</b> {node["attack"]}"
+def recipe_query(weapon, conn):
+    if not conn:
+        print("no conn!")
+        exit()
+    query = f"""
+        SELECT i.id item_id, it.name item_name, i.icon_name item_icon_name,
+                    i.category item_category, i.icon_color item_icon_color, ri.quantity, ri.recipe_type
+        FROM
+        (
+            SELECT 'Create' recipe_type, item_id, quantity
+            FROM recipe_item
+            WHERE recipe_id = (SELECT create_recipe_id FROM weapon WHERE id = {weapon})
+            UNION
+            SELECT 'Upgrade' recipe_type, item_id, quantity
+            FROM recipe_item
+            WHERE recipe_id = (SELECT upgrade_recipe_id FROM weapon WHERE id = {weapon})
+        ) ri
+        JOIN item i
+          ON i.id = ri.item_id
+        JOIN item_text it
+          ON it.id = i.id
+          AND it.lang_id ='en' 
+        ORDER BY i.id
+    """
 
-def make_graph(weapon_name, conn, layoutfunc=nx.spring_layout):
+    cursor = conn.cursor()
+    cursor.execute(query)
+    return cursor.fetchall()
+
+def make_node_text(node, conn):
+    deps = recipe_query(node["id"], conn)
+    deps = [dep[1] for dep in deps]
+    return f"<b>{node["name"]}</b><br><b>*Rarity:</b> {node["rarity"]}<br><b>*Attack:</b> {node["attack"]}<br><b>Deps:</b>{deps}"
+
+def make_weapon_graph(weapon_name, conn, output_dir, layoutfunc=nx.nx_agraph.graphviz_layout):
     # get data:
     rows = query(weapon_name, conn)
 
@@ -38,7 +71,7 @@ def make_graph(weapon_name, conn, layoutfunc=nx.spring_layout):
     G = nx.DiGraph()
     for id, rarity, attack, weapon, previous_weapon_id, craftable, category in rows:
         # Ensure the 'name' attribute is being added here
-        G.add_node(id, rarity=rarity, attack=attack, name=weapon, craftable=craftable, category=category)
+        G.add_node(id, id=id, rarity=rarity, attack=attack, name=weapon, craftable=craftable, category=category)
         if previous_weapon_id:
             G.add_edge(previous_weapon_id, id)
 
@@ -50,31 +83,28 @@ def make_graph(weapon_name, conn, layoutfunc=nx.spring_layout):
     node_x = [pos[node][0] for node in G.nodes()]
     node_y = [pos[node][1] for node in G.nodes()]
     # node_text = [G.nodes[node]['name'] for node in G.nodes()]
-    node_text = [make_node_text(G.nodes[node]) for node in G.nodes()]
+    node_text = [make_node_text(G.nodes[node], conn) for node in G.nodes()]
     node_hoverinfo = 'text'
     edge_x = []
     edge_y = []
     for edge in G.edges():
         x0, y0 = pos[edge[0]]
         x1, y1 = pos[edge[1]]
-        edge_x.append(x0)
-        edge_x.append(x1)
-        edge_x.append(None)
-        edge_y.append(y0)
-        edge_y.append(y1)
-        edge_y.append(None)
+        edge_x.extend([x0, x1, None])  # extend the list with the source and target x-coordinates and None
+        edge_y.extend([y0, y1, None])
 
     # Prepare node colors based on the 'craftable' attribute
     node_colors = ['red' if G.nodes[node]['craftable'] else 'blue' for node in G.nodes()]
-
+   
     # Create Plotly figure
+
     fig = go.Figure(
-        data =[
+        data=[
             go.Scatter(
                 x=node_x, y=node_y,
                 mode='markers',
                 text=node_text,
-                hoverinfo=node_hoverinfo,
+                hoverinfo='text',
                 marker=dict(
                     showscale=False,
                     size=10,
@@ -86,8 +116,9 @@ def make_graph(weapon_name, conn, layoutfunc=nx.spring_layout):
                 x=edge_x, y=edge_y,
                 mode='lines',
                 line=dict(width=0.5, color='#888'),
-                hoverinfo='none'
-            )
+                hoverinfo='none',
+                showlegend=False,
+            ),
         ],
         layout=go.Layout(
             title="<br>Monster Hunter World " + weapon_name + " Tree",
@@ -98,6 +129,27 @@ def make_graph(weapon_name, conn, layoutfunc=nx.spring_layout):
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
         )
     )
+    
+    print(pos)
+
+    # Add arrowheads to edges
+    for edge in G.edges():
+        source_node_pos = pos[edge[0]]
+        target_node_pos = pos[edge[1]]
+        # print(f"Arrow Head: ({target_node_pos[0]}, {target_node_pos[1]}) || Arrow Tail: ({source_node_pos[0]}, {source_node_pos[1]})")
+        fig.add_annotation(
+            x=target_node_pos[0],  # x-coordinate of arrowhead
+            y=target_node_pos[1],  # y-coordinate of arrowhead
+            # ax=source_node_pos[0],  # x-coordinate of tail of arrow
+            # ay=source_node_pos[1],  # y-coordinate of tail of arrow
+            ax = 0,
+            ay = 0,
+            arrowhead=2,            # arrowhead size
+            arrowsize=1.5,          # arrow size
+            arrowwidth=1,           # arrow width
+            arrowcolor='#888',      # arrow color
+            showarrow=True
+        )
 
     # Save the figure to a HTML file
     pyo.plot(fig, filename=f"{output_dir}/mhw_{weapon_name}_tree.html")
@@ -108,28 +160,6 @@ def make_graph(weapon_name, conn, layoutfunc=nx.spring_layout):
     plt.close()
 
 
-output_dir = "./output"
-weapon_names = {
-    "great-sword",
-    "long-sword",
-    "sword-and-shield",
-    "dual-blades",
-    "hammer",
-    "hunting-horn",
-    "lance",
-    "gunlance",
-    "switch-axe",
-    "charge-blade",
-    "insect-glaive",
-    "light-bowgun",
-    "heavy-bowgun",
-    "bow",
-}
 
-conn = sqlite3.connect("../mhw.db")  # Replace with your database connection
-# for weapon in weapon_names:
-#     print(f"* Weapon: {weapon}")
-#     make_graph(weapon, conn, nx.nx_agraph.graphviz_layout)
-make_graph("great-sword", conn, nx.nx_agraph.graphviz_layout)
+#make_weapon_graph("great-sword", conn, nx.nx_agraph.graphviz_layout)
 
-conn.close()
