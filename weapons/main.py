@@ -28,7 +28,7 @@ def main():
     conn = sqlite3.connect("../mhw.db")  
     for item in item_ids:
         print(f"* Item: {item}")
-        make_item_graph(item, conn, output_dir)
+        # make_item_graph(item, conn, output_dir)
     # for weapon in weapon_names:
     #     print(f"* Weapon: {weapon}")
     #     make_weapon_graph(weapon, conn, output_dir)
