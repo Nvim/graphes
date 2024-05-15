@@ -1,22 +1,23 @@
 import sqlite3
 
+import graphviz
 import matplotlib.pyplot as plt
 import networkx as nx
+import plotly
 import plotly.graph_objs as go
 import plotly.offline as pyo
-import plotly
-from all_recipe_items import get_item_list
-import graphviz
 
-# Obtenir l'arbre de toutes les dépendances d'armes pour chaque arme
+from db_connection import conn
+from recipe_items import get_all_items_list
+from score import eval_location, eval_monster_part, eval_quest_reward
 
 
-def query(weapon, conn):
+def get_weapon_rows(weapon):
     if not conn:
         print("no conn!")
         exit()
     query = f"""
-    SELECT w.id, w.rarity, w.attack, wt.name, w.previous_weapon_id, w.craftable, w.category
+    SELECT w.id, w.rarity, w.attack, wt.name, w.previous_weapon_id, w.craftable, w.category, final
         FROM weapon w
             JOIN weapon_text wt USING (id)
             LEFT OUTER JOIN weapon_ammo wa ON w.ammo_id = wa.id
@@ -29,13 +30,14 @@ def query(weapon, conn):
     cursor.execute(query)
     return cursor.fetchall()
 
-def recipe_query(weapon, conn):
+
+def get_weapon_recipe(weapon):
     if not conn:
         print("no conn!")
         exit()
     query = f"""
-        SELECT i.id item_id, it.name item_name, i.icon_name item_icon_name,
-                    i.category item_category, i.icon_color item_icon_color, ri.quantity, ri.recipe_type
+        SELECT i.id item_id, it.name item_name, ri.quantity,
+                    i.category item_category, ri.recipe_type
         FROM
         (
             SELECT 'Create' recipe_type, item_id, quantity
@@ -58,53 +60,162 @@ def recipe_query(weapon, conn):
     cursor.execute(query)
     return cursor.fetchall()
 
-def make_node_text(node, conn):
-    deps = recipe_query(node["id"], conn)
-    deps = [dep[1] for dep in deps]
-    return f"<b>{node["name"]}</b><br><b>*Rarity:</b> {node["rarity"]}<br><b>*Attack:</b> {node["attack"]}<br><b>Deps:</b>{deps}"
 
-def make_weapon_graph(weapon_name, conn, output_dir, layoutfunc=nx.nx_agraph.graphviz_layout):
+def make_node_text(node):
+    deps = [f"{dep[2]}x{dep[1]}" for dep in node["deps"]]
+    all_deps = [dep[1] for dep in node["deps_sum"]]
+    return f"""
+    <b>{node["name"]}</b><br>
+    <b>*Score:</b> {node["score"]}<br>
+    <b>*Upgrade Score</b> {node["upgrade_score"]}<br>
+    <b>*Rarity:</b> {node["rarity"]}<br>
+    <b>*Attack:</b> {node["attack"]}<br>
+    <b>*Deps:</b> {deps}<br>
+    <b>*All Deps:</b> {'<br>'.join(all_deps)}<br>
+    """
+
+
+def dfs_traverse(G, node, parent_deps):
+    for neighbor in G.neighbors(node):
+        deps_sum = parent_deps + G.nodes[neighbor]["deps"]
+        G.nodes[neighbor]["deps_sum"] = deps_sum
+        dfs_traverse(G, neighbor, deps_sum)
+
+
+def calculate_deps_sum(G):
+    for node in G.nodes():
+        if not G.nodes[node]["prev_id"]:  # root node
+            G.nodes[node]["deps_sum"] = G.nodes[node]["deps"]
+            dfs_traverse(G, node, G.nodes[node]["deps"])
+
+
+def caclculate_score(G):
+    for node in G.nodes():
+        depsCount = len(G.nodes[node]["deps_sum"])
+
+        monsterEval = 0
+        locationEval = 0
+        questEval = 0
+
+        for item in G.nodes[node]["deps_sum"]:
+            item_id = item[0]
+            sources = get_all_items_list(item_id)
+            monsterEval += eval_monster_part(sources[0], True)
+            locationEval += eval_location(sources[1], True)
+            questEval += eval_quest_reward(sources[2], True)
+        monsterEval = monsterEval / depsCount
+        locationEval = locationEval / depsCount
+        questEval = questEval / depsCount
+        score = monsterEval + locationEval + questEval
+        G.nodes[node]["score"] = score
+
+        # For this upgrade only:
+        depsCount = len(G.nodes[node]["deps"])
+
+        monsterEval = 0
+        locationEval = 0
+        questEval = 0
+
+        for item in G.nodes[node]["deps"]:
+            item_id = item[0]
+            sources = get_all_items_list(item_id)
+            monsterEval += eval_monster_part(sources[0], True)
+            locationEval += eval_location(sources[1], True)
+            questEval += eval_quest_reward(sources[2], True)
+        monsterEval = monsterEval / depsCount
+        locationEval = locationEval / depsCount
+        questEval = questEval / depsCount
+        score = monsterEval + locationEval + questEval
+        G.nodes[node]["upgrade_score"] = score
+
+
+def make_weapon_graph(weapon_name, layoutfunc=nx.nx_agraph.graphviz_layout):
     # get data:
-    rows = query(weapon_name, conn)
+    rows = get_weapon_rows(weapon_name)
 
     # graph:
     G = nx.DiGraph()
-    for id, rarity, attack, weapon, previous_weapon_id, craftable, category in rows:
-        # Ensure the 'name' attribute is being added here
-        G.add_node(id, id=id, rarity=rarity, attack=attack, name=weapon, craftable=craftable, category=category)
+    for (
+        id,
+        rarity,
+        attack,
+        weapon,
+        previous_weapon_id,
+        craftable,
+        category,
+        final,
+    ) in rows:
+        deps = get_weapon_recipe(id)
+        # deps = [dep[1] for dep in deps]
+        G.add_node(
+            id,
+            id=id,
+            rarity=rarity,
+            attack=attack,
+            name=weapon,
+            craftable=craftable,
+            category=category,
+            prev_id=previous_weapon_id,
+            final=final,
+            deps=deps,
+        )
         if previous_weapon_id:
             G.add_edge(previous_weapon_id, id)
 
+    calculate_deps_sum(G)
+    caclculate_score(G)
+
+    for u, v in G.edges():
+        # if 'upgrade_score' in G.nodes[v]:  # Ensure the target node has the attribute
+        G[u][v]["weight"] = G.nodes[v]["upgrade_score"]
     # Generate positions for each node
     pos = layoutfunc(G)
-    # pos = nx.nx_agraph.graphviz_layout(G)
+
+    return G, pos
+
+
+def draw_weapon_graph(G, pos, weapon_name, output_dir):
 
     # Prepare node and edge traces for Plotly
     node_x = [pos[node][0] for node in G.nodes()]
     node_y = [pos[node][1] for node in G.nodes()]
     # node_text = [G.nodes[node]['name'] for node in G.nodes()]
-    node_text = [make_node_text(G.nodes[node], conn) for node in G.nodes()]
-    node_hoverinfo = 'text'
+    node_text = [make_node_text(G.nodes[node]) for node in G.nodes()]
     edge_x = []
     edge_y = []
-    for edge in G.edges():
+    annotations = []
+    for edge in G.edges(data=True):
         x0, y0 = pos[edge[0]]
         x1, y1 = pos[edge[1]]
-        edge_x.extend([x0, x1, None])  # extend the list with the source and target x-coordinates and None
+        edge_x.extend([x0, x1, None])
         edge_y.extend([y0, y1, None])
+        mid_x = (x0 + x1) / 2
+        mid_y = (y0 + y1) / 2
+        weight = edge[2].get("weight", "N/A")
+        annotations.append(
+            dict(
+                x=mid_x,
+                y=mid_y,
+                text=f"{weight:.2f}",
+                font=dict(color="black", size=10),
+                showarrow=False,
+            )
+        )
 
     # Prepare node colors based on the 'craftable' attribute
-    node_colors = ['red' if G.nodes[node]['craftable'] else 'blue' for node in G.nodes()]
-   
-    # Create Plotly figure
+    node_colors = [
+        "red" if G.nodes[node]["craftable"] else "blue" for node in G.nodes()
+    ]
 
+    # Create Plotly figure
     fig = go.Figure(
         data=[
             go.Scatter(
-                x=node_x, y=node_y,
-                mode='markers',
+                x=node_x,
+                y=node_y,
+                mode="markers",
                 text=node_text,
-                hoverinfo='text',
+                hoverinfo="text",
                 marker=dict(
                     showscale=False,
                     size=10,
@@ -113,43 +224,41 @@ def make_weapon_graph(weapon_name, conn, output_dir, layoutfunc=nx.nx_agraph.gra
                 ),
             ),
             go.Scatter(
-                x=edge_x, y=edge_y,
-                mode='lines',
-                line=dict(width=0.5, color='#888'),
-                hoverinfo='none',
+                x=edge_x,
+                y=edge_y,
+                mode="lines",
+                line=dict(width=0.5, color="#888"),
+                hoverinfo="none",
                 showlegend=False,
             ),
         ],
         layout=go.Layout(
             title="<br>Monster Hunter World " + weapon_name + " Tree",
             showlegend=False,
-            hovermode='closest',
+            hovermode="closest",
             margin=dict(b=20, l=5, r=5, t=40),
+            annotations=annotations,
             xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
-        )
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        ),
     )
-    
-    print(pos)
 
     # Add arrowheads to edges
-    for edge in G.edges():
-        source_node_pos = pos[edge[0]]
-        target_node_pos = pos[edge[1]]
-        # print(f"Arrow Head: ({target_node_pos[0]}, {target_node_pos[1]}) || Arrow Tail: ({source_node_pos[0]}, {source_node_pos[1]})")
-        fig.add_annotation(
-            x=target_node_pos[0],  # x-coordinate of arrowhead
-            y=target_node_pos[1],  # y-coordinate of arrowhead
-            # ax=source_node_pos[0],  # x-coordinate of tail of arrow
-            # ay=source_node_pos[1],  # y-coordinate of tail of arrow
-            ax = 0,
-            ay = 0,
-            arrowhead=2,            # arrowhead size
-            arrowsize=1.5,          # arrow size
-            arrowwidth=1,           # arrow width
-            arrowcolor='#888',      # arrow color
-            showarrow=True
-        )
+    # for edge in G.edges():
+    #     source_node_pos = pos[edge[0]]
+    #     target_node_pos = pos[edge[1]]
+    #     print(f"Arrow Head: ({target_node_pos[0]}, {target_node_pos[1]}) || Arrow Tail: ({source_node_pos[0]}, {source_node_pos[1]})")
+    #     fig.add_annotation(
+    #         x=target_node_pos[0],  # x-coordinate of arrowhead
+    #         y=target_node_pos[1],  # y-coordinate of arrowhead
+    #         ax=source_node_pos[0],  # x-coordinate of tail of arrow
+    #         ay=source_node_pos[1],  # y-coordinate of tail of arrow
+    #         arrowhead=2,            # arrowhead size
+    #         arrowsize=1.5,          # arrow size
+    #         arrowwidth=1,           # arrow width
+    #         arrowcolor='#888',      # arrow color
+    #         showarrow=True
+    #     )
 
     # Save the figure to a HTML file
     pyo.plot(fig, filename=f"{output_dir}/mhw_{weapon_name}_tree.html")
@@ -158,8 +267,3 @@ def make_weapon_graph(weapon_name, conn, output_dir, layoutfunc=nx.nx_agraph.gra
     nx.draw(G, with_labels=True, pos=pos)
     plt.savefig(f"{output_dir}/mhw_{weapon_name}_tree.png")
     plt.close()
-
-
-
-#make_weapon_graph("great-sword", conn, nx.nx_agraph.graphviz_layout)
-
