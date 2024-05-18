@@ -1,13 +1,11 @@
-import sqlite3
+import math
 
-import graphviz
 import matplotlib.pyplot as plt
 import networkx as nx
-import plotly
 import plotly.graph_objs as go
-import plotly.offline as pyo
+import plotly.io as pyo
 
-from db_connection import conn
+from db_connection import conn, ignore_craftable, suffix
 from recipe_items import get_all_items_list
 from score import eval_location, eval_monster_part, eval_quest_reward
 
@@ -17,7 +15,7 @@ def get_weapon_rows(weapon):
         print("no conn!")
         exit()
     query = f"""
-    SELECT w.id, w.rarity, w.attack, wt.name, w.previous_weapon_id, w.craftable, w.category, final
+    SELECT w.id, w.rarity, w.attack, wt.name, w.previous_weapon_id, w.craftable, w.category, final, w.weapon_type, w.sharpness
         FROM weapon w
             JOIN weapon_text wt USING (id)
             LEFT OUTER JOIN weapon_ammo wa ON w.ammo_id = wa.id
@@ -67,7 +65,11 @@ def make_node_text(node):
     return f"""
     <b>{node["name"]}</b><br>
     <b>*Score:</b> {node["score"]}<br>
-    <b>*Upgrade Score</b> {node["upgrade_score"]}<br>
+    <b>*Clamped Score:</b> {node["clamped_score"]}<br>
+    <b>*Log Score:</b> {node["log_score"]}<br>
+    <b>*Upgrade Score:</b> {node["upgrade_score"]}<br>
+    <b>*Clamped Upgrade Score:</b> {node["clamped_upgrade_score"]}<br>
+    <b>*Distance:</b> {node["distance"]}<br>
     <b>*Rarity:</b> {node["rarity"]}<br>
     <b>*Attack:</b> {node["attack"]}<br>
     <b>*Deps:</b> {deps}<br>
@@ -83,34 +85,65 @@ def dfs_traverse(G, node, parent_deps):
 
 
 def calculate_deps_sum(G):
+    if not ignore_craftable:
+        for node in G.nodes():
+            if G.nodes[node]["craftable"]:
+                G.nodes[node]["deps_sum"] = G.nodes[node]["deps"]
+                dfs_traverse(G, node, G.nodes[node]["deps"])
+    else:
+        for node in G.nodes():
+            if not G.nodes[node]["prev_id"]:  # root node
+                G.nodes[node]["deps_sum"] = G.nodes[node]["deps"]
+                dfs_traverse(G, node, G.nodes[node]["deps"])
+
+
+def calculate_distances(G):
+    if not ignore_craftable:
+        for node in G.nodes:
+            distance = 0
+            current = node
+            while not G.nodes[current]["craftable"]:
+                distance += 1
+                current = G.nodes[current]["prev_id"]
+            G.nodes[node]["distance"] = distance
+    else:
+        for node in G.nodes:
+            distance = 0
+            current = node
+            while G.nodes[current]["prev_id"]:
+                distance += 1
+                current = G.nodes[current]["prev_id"]
+            G.nodes[node]["distance"] = distance
+
+
+# Appelle après calculate_upgrade_scores
+def calculate_scores(G):
+    if not ignore_craftable:
+        for node in nx.topological_sort(G):
+            if not G.nodes[node]["craftable"]:
+                parent = G.nodes[node]["prev_id"]
+                parent_score = G.nodes[parent].get("score", 0)
+                G.nodes[node]["score"] = G.nodes[node]["upgrade_score"] + parent_score
+            else:  # It's a root node
+                G.nodes[node]["score"] = G.nodes[node]["upgrade_score"]
+    else:
+        for node in nx.topological_sort(G):
+            if G.nodes[node]["prev_id"]:
+                parent = G.nodes[node]["prev_id"]
+                parent_score = G.nodes[parent].get("score", 0)
+                G.nodes[node]["score"] = G.nodes[node]["upgrade_score"] + parent_score
+            else:  # It's a root node
+                G.nodes[node]["score"] = G.nodes[node]["upgrade_score"]
+
+
+def calculate_upgrade_scores(G):
     for node in G.nodes():
-        if not G.nodes[node]["prev_id"]:  # root node
-            G.nodes[node]["deps_sum"] = G.nodes[node]["deps"]
-            dfs_traverse(G, node, G.nodes[node]["deps"])
-
-
-def caclculate_score(G):
-    for node in G.nodes():
-        depsCount = len(G.nodes[node]["deps_sum"])
-
-        monsterEval = 0
-        locationEval = 0
-        questEval = 0
-
-        for item in G.nodes[node]["deps_sum"]:
-            item_id = item[0]
-            sources = get_all_items_list(item_id)
-            monsterEval += eval_monster_part(sources[0], True)
-            locationEval += eval_location(sources[1], True)
-            questEval += eval_quest_reward(sources[2], True)
-        monsterEval = monsterEval / depsCount
-        locationEval = locationEval / depsCount
-        questEval = questEval / depsCount
-        score = monsterEval + locationEval + questEval
-        G.nodes[node]["score"] = score
 
         # For this upgrade only:
-        depsCount = len(G.nodes[node]["deps"])
+        # oldDepsCount = len(G.nodes[node]["deps"])
+        depsCount = 0
+        for item in G.nodes[node]["deps"]:
+            depsCount += int(item[2])
 
         monsterEval = 0
         locationEval = 0
@@ -118,15 +151,83 @@ def caclculate_score(G):
 
         for item in G.nodes[node]["deps"]:
             item_id = item[0]
+            item_quantity = int(item[2])
             sources = get_all_items_list(item_id)
-            monsterEval += eval_monster_part(sources[0], True)
-            locationEval += eval_location(sources[1], True)
-            questEval += eval_quest_reward(sources[2], True)
+            monsterEval += item_quantity * eval_monster_part(sources[0], True)
+            locationEval += item_quantity * eval_location(sources[1], True)
+            questEval += item_quantity * eval_quest_reward(sources[2], True)
         monsterEval = monsterEval / depsCount
         locationEval = locationEval / depsCount
         questEval = questEval / depsCount
         score = monsterEval + locationEval + questEval
-        G.nodes[node]["upgrade_score"] = score
+        if G.nodes[node]["distance"] == 0:
+            G.nodes[node]["upgrade_score"] = score
+        else:
+            G.nodes[node]["upgrade_score"] = score / G.nodes[node]["distance"]
+
+
+# all scores are between 0 and 1
+def clamp_upgrade_scores(G):
+    scores = [G.nodes[node]["upgrade_score"] for node in G.nodes()]
+    min_score = min(scores)
+    max_score = max(scores)
+    for node in G.nodes:
+        if max_score != min_score:
+            G.nodes[node]["clamped_upgrade_score"] = (
+                G.nodes[node]["upgrade_score"] - min_score
+            ) / (max_score - min_score)
+        else:
+            G.nodes[node][
+                "clamped_upgrade_score"
+            ] = 1.0  # Handle case where all scores are the same
+
+
+def calculate_clamped_scores(G):
+    if not ignore_craftable:
+        for node in nx.topological_sort(G):
+            if not G.nodes[node]["craftable"]:
+                parent = G.nodes[node]["prev_id"]
+                parent_score = G.nodes[parent].get("clamped_score", 0)
+                G.nodes[node]["clamped_score"] = (
+                    G.nodes[node]["clamped_upgrade_score"] * parent_score
+                )
+            else:  # It's a root node
+                G.nodes[node]["clamped_score"] = G.nodes[node]["clamped_upgrade_score"]
+    else:
+        for node in nx.topological_sort(G):
+            if G.nodes[node]["prev_id"]:
+                parent = G.nodes[node]["prev_id"]
+                parent_score = G.nodes[parent].get("clamped_score", 0)
+                G.nodes[node]["clamped_score"] = (
+                    G.nodes[node]["clamped_upgrade_score"] * parent_score
+                )
+            else:  # It's a root node
+                G.nodes[node]["clamped_score"] = G.nodes[node]["clamped_upgrade_score"]
+
+
+def calculate_log_scores(G):
+    if not ignore_craftable:
+        for node in nx.topological_sort(G):
+            if not G.nodes[node]["craftable"]:
+                parent = G.nodes[node]["prev_id"]
+                parent_score = G.nodes[parent].get("log_score", 0)
+                normalized_score = G.nodes[node]["clamped_upgrade_score"]
+                log_score = math.log(normalized_score + 1e-9)
+                G.nodes[node]["log_score"] = log_score + parent_score
+            else:  # It's a root node
+                normalized_score = G.nodes[node]["clamped_upgrade_score"]
+                G.nodes[node]["log_score"] = math.log(normalized_score + 1e-9)
+    else:
+        for node in nx.topological_sort(G):
+            if G.nodes[node]["prev_id"]:
+                parent = G.nodes[node]["prev_id"]
+                parent_score = G.nodes[parent].get("log_score", 0)
+                normalized_score = G.nodes[node]["clamped_upgrade_score"]
+                log_score = math.log(normalized_score + 1e-9)
+                G.nodes[node]["log_score"] = log_score + parent_score
+            else:  # It's a root node
+                normalized_score = G.nodes[node]["clamped_upgrade_score"]
+                G.nodes[node]["log_score"] = math.log(normalized_score + 1e-9)
 
 
 def make_weapon_graph(weapon_name, layoutfunc=nx.nx_agraph.graphviz_layout):
@@ -144,6 +245,8 @@ def make_weapon_graph(weapon_name, layoutfunc=nx.nx_agraph.graphviz_layout):
         craftable,
         category,
         final,
+        type,
+        sharpness,
     ) in rows:
         deps = get_weapon_recipe(id)
         # deps = [dep[1] for dep in deps]
@@ -158,16 +261,23 @@ def make_weapon_graph(weapon_name, layoutfunc=nx.nx_agraph.graphviz_layout):
             prev_id=previous_weapon_id,
             final=final,
             deps=deps,
+            type=type,
+            sharpness=sharpness.rsplit(",", 1)[-1] if sharpness is not None else None,
         )
         if previous_weapon_id:
             G.add_edge(previous_weapon_id, id)
 
+    calculate_distances(G)
     calculate_deps_sum(G)
-    caclculate_score(G)
+    calculate_upgrade_scores(G)
+    clamp_upgrade_scores(G)
+    calculate_scores(G)
+    calculate_clamped_scores(G)
+    calculate_log_scores(G)
 
     for u, v in G.edges():
         # if 'upgrade_score' in G.nodes[v]:  # Ensure the target node has the attribute
-        G[u][v]["weight"] = G.nodes[v]["upgrade_score"]
+        G[u][v]["weight"] = G.nodes[v]["clamped_upgrade_score"]
     # Generate positions for each node
     pos = layoutfunc(G)
 
@@ -233,7 +343,7 @@ def draw_weapon_graph(G, pos, weapon_name, output_dir):
             ),
         ],
         layout=go.Layout(
-            title="<br>Monster Hunter World " + weapon_name + " Tree",
+            title="<br>Monster Hunter World <b>" + weapon_name + "</b>" + suffix,
             showlegend=False,
             hovermode="closest",
             margin=dict(b=20, l=5, r=5, t=40),
@@ -261,9 +371,13 @@ def draw_weapon_graph(G, pos, weapon_name, output_dir):
     #     )
 
     # Save the figure to a HTML file
-    pyo.plot(fig, filename=f"{output_dir}/mhw_{weapon_name}_tree.html")
+    pyo.write_html(
+        fig,
+        file=f"{output_dir}/{weapon_name}/{weapon_name}_graph.html",
+        auto_open=False,
+    )
 
     # Draw the graph:
-    nx.draw(G, with_labels=True, pos=pos)
-    plt.savefig(f"{output_dir}/mhw_{weapon_name}_tree.png")
-    plt.close()
+    # nx.draw(G, with_labels=True, pos=pos)
+    # plt.savefig(f"{output_dir}/{weapon_name}/{weapon_name}_graph.png")
+    # plt.close()

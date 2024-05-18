@@ -1,5 +1,11 @@
 import sqlite3
 
+ignore_craftable = False
+suffix = ""
+if ignore_craftable:
+    suffix = " - 'Craftables' ignorés"
+else:
+    suffix = " - 'Craftables' inclus"
 conn = sqlite3.connect("../mhw.db")
 MAX_RANK = 16
 output_dir = "./output"

@@ -1,5 +1,4 @@
 import networkx as nx
-
 from db_connection import MAX_RANK, conn
 from recipe_items import get_all_items_list
 
@@ -38,6 +37,10 @@ def eval_monster_part(parts_list: list, quiet: bool = False):
 
             min_rank_inv = MAX_RANK + 1 - min_rank
             score = get_score(part[0], avg_odd, nb_lines)
+            if min_rank >= 9:  # MR
+                score *= 0.8
+            if min_rank > 5:  # HR
+                score *= 0.9
 
             if not quiet:
                 print(
@@ -64,8 +67,11 @@ def eval_quest_reward(rewards_list: list, quiet: bool = False):
             nb_stacks = reward[7]
 
             min_rank_inv = MAX_RANK + 1 - min_rank
-            # score = min_rank_inv + (avg_odd * nb_stacks * avg_rank)
             score = get_score(reward[0], avg_odd, nb_lines)
+            if min_rank > 9:  # MR
+                score *= 0.8
+            if min_rank > 5:  # HR
+                score *= 0.9
 
             if not quiet:
                 print(
@@ -95,6 +101,8 @@ def eval_location(locations_list: list, quiet: bool = False):
             min_rank_inv = MAX_RANK + 1 - min_rank
             # score = min_rank_inv + (avg_odd * nb_stacks * avg_rank)
             score = get_score(location[0], avg_odd, nb_lines)
+            if min_rank == 6:  # HR
+                score *= 0.9
 
             if not quiet:
                 print(
