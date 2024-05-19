@@ -25,3 +25,11 @@ weapon_names = {
     "heavy-bowgun",
     "bow",
 }
+
+armor_types = {
+    "head",
+    "chest",
+    "arms",
+    "waist",
+    "legs",
+}
