@@ -307,6 +307,7 @@ def draw_weapon_graph(G, pos, weapon_name, output_dir):
                 x=mid_x,
                 y=mid_y,
                 text=f"{weight:.2f}",
+                # text="",
                 font=dict(color="black", size=10),
                 showarrow=False,
             )

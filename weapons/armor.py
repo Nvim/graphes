@@ -87,19 +87,30 @@ def calculate_scores(G):
             monsterEval = 0
             locationEval = 0
             questEval = 0
+            error = 0
 
             for item in G.nodes[node]["deps"]:
                 item_id = item[0]
                 item_quantity = int(item[2])
                 sources = get_all_items_list(item_id)
-                monsterEval += item_quantity * eval_monster_part(sources[0], True)
-                locationEval += item_quantity * eval_location(sources[1], True)
-                questEval += item_quantity * eval_quest_reward(sources[2], True)
+                tmpMon = eval_monster_part(sources[0], True)
+                tmpLoc = eval_location(sources[1], True)
+                tmpRew = eval_quest_reward(sources[2], True)
+                if tmpMon + tmpLoc + tmpRew == 0:
+                    # G.nodes[node]["score"] = -1
+                    # return
+                    error = -1
+                monsterEval += item_quantity * tmpMon
+                locationEval += item_quantity * tmpLoc 
+                questEval += item_quantity * tmpRew
             monsterEval = monsterEval / depsCount
             locationEval = locationEval / depsCount
             questEval = questEval / depsCount
             score = monsterEval + locationEval + questEval
-            G.nodes[node]["score"] = score
+            if error == -1:
+                G.nodes[node]["score"] = -1
+            else:
+                G.nodes[node]["score"] = score
 
 
 def make_armor_graph(armor_type):
@@ -123,13 +134,13 @@ def make_armor_graph(armor_type):
             G.add_edge(dep_id, id)
 
     calculate_scores(G)
-    # nodes_to_remove = [
-    #     node
-    #     for node in G.nodes
-    #     if G.nodes[node]["type"] == "armor" and G.nodes[node]["score"] == 0
-    # ]
-    # for node in nodes_to_remove:
-    #     G.remove_node(node)
+    nodes_to_remove = [
+        node
+        for node in G.nodes
+        if G.nodes[node]["type"] == "armor" and G.nodes[node]["score"] == -1
+    ]
+    for node in nodes_to_remove:
+        G.remove_node(node)
     pos = nx.nx_agraph.graphviz_layout(G)
     return G, pos
 

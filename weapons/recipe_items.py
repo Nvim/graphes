@@ -8,6 +8,21 @@ from db_connection import conn
 
 # Obtenir un graph de tous les items nécéssaires à une arme
 
+def get_item_name(item_id):
+    query = f"""
+        SELECT name
+        FROM item i join item_text it
+        on i.id = it.id
+        WHERE i.id = {item_id}
+        and it.lang_id = 'en'
+    """
+    cursor = conn.cursor()
+    cursor.execute(query)
+    result = cursor.fetchone()
+    if result is None:
+        return ""
+    else:
+        return result[0]
 
 # All possible gathering loccations for an item
 def loadItemLocations(item, aggregate: bool = False):
@@ -223,7 +238,8 @@ def make_item_graph(item_id, output_dir):
 
     # graph:
     G = nx.DiGraph()
-    G.add_node(item_id, source="oui", odd="oui", kind="oui")
+    name = get_item_name(item_id)
+    G.add_node(item_id, source=f"{name}", odd="X", kind="X")
     id = 0
     for source, odd, kind in rows:
         G.add_node(id, source=source, odd=odd, kind=kind)
@@ -299,7 +315,7 @@ def make_item_graph(item_id, output_dir):
             ),
         ],
         layout=go.Layout(
-            title="<br>Monster Hunter World " + item_id + " Tree",
+            title="<br>Monster Hunter World " + name + " Tree",
             showlegend=False,
             hovermode="closest",
             margin=dict(b=20, l=5, r=5, t=40),

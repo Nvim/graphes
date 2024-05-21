@@ -5,7 +5,7 @@ from armor import draw_armor_graph, make_armor_graph
 from db_connection import armor_types, conn, output_dir, weapon_names
 from numpy import double
 from plotly.tools import os
-from recipe_items import get_all_items_list
+from recipe_items import get_all_items_list, make_item_graph
 from score import eval_location, eval_monster_part, eval_quest_reward, get_item_rarity
 from weapons_plotly import draw_weapon_graph, make_weapon_graph
 
@@ -120,7 +120,7 @@ def armor_graph_to_dict():
 
 def lin_prog():
     armor_pieces = armor_graph_to_dict()
-    lp_problem = pulp.LpProblem("Minimize_Cost", pulp.LpMinimize)
+    lp_problem = pulp.LpProblem("Minimize_Cost", pulp.LpMaximize)
 
     # Variables:
     vars = {}
@@ -152,7 +152,7 @@ def lin_prog():
                 for piece in armor_pieces[armor_type]
             ]
         )
-        >= 100
+        >= 400
     )
 
     # Résolution
@@ -161,8 +161,9 @@ def lin_prog():
     for armor_type in armor_pieces:
         for piece in armor_pieces[armor_type]:
             if pulp.value(vars[piece["name"]]) == 1:
-                selected_pieces.append(piece["name"])
-    print(f"Soltion: {selected_pieces}\nTotal cost: {pulp.value(lp_problem.objective)}")
+                selected_pieces.append(piece)
+    import pprint
+    pprint.pprint(f"Soltion: {selected_pieces}\nTotal cost: {pulp.value(lp_problem.objective)}")
 
 
 def show_scores_for_items(item_list):
@@ -187,12 +188,14 @@ def show_scores_for_materials():
     query = """
         select id from item where category = 'material'
     """
+    stdout = sys.stdout
     cursor = conn.cursor()
     cursor.execute(query)
     item_ids = cursor.fetchall()
     item_ids = [item_id[0] for item_id in item_ids]
     list = show_scores_for_items(item_ids)
     list = sorted(list, key=lambda x: x[1], reverse=False)
+    sys.stdout = open(f"{output_dir}/material_scores.txt", "w")
     for name, score, monsterEval, locationEval, questEval, rarity in list:
         print(
             f"""* {name}:
@@ -200,6 +203,7 @@ def show_scores_for_materials():
             - Monster: {monsterEval:.0f} | Location: {locationEval:.0f} | Quest: {questEval:.0f}
             """
         )
+    sys.stdout = stdout
 
 
 def get_best_attack(sorted_nodes, hr_only=False):
@@ -211,18 +215,22 @@ def get_best_attack(sorted_nodes, hr_only=False):
 
 def weapons_best_attack(hr_only=False):
     best_weapons = []
+    stdout = sys.stdout
     for weapon_name in weapon_names:
         G, pos = make_weapon_graph(weapon_name)
         list = show_weapon_scores(G, weapon_name)
         best = get_best_attack(list, hr_only)
         best_weapons.append(best)
 
+    sys.stdout = open(f"{output_dir}/best_attack.txt", "w")
+    print(f"Highest attack weapons - HR Only: {hr_only}")
     best_weapons = sorted(best_weapons, key=lambda x: x[2])
     for best in best_weapons:
         print(best)
+    sys.stdout = stdout
 
 
-def main_weapons():
+def main_weapons(final_only=False, sharp_only=False):
     all_weapon_scores = []
     stdout = sys.stdout
     for weapon_name in weapon_names:
@@ -230,41 +238,51 @@ def main_weapons():
             os.makedirs(f"{output_dir}/{weapon_name}")
         output_file = open(f"{output_dir}/{weapon_name}/scores.txt", "w")
         G, pos = make_weapon_graph(weapon_name)
-        # draw_weapon_graph(G, pos, weapon_name, output_dir)
+        draw_weapon_graph(G, pos, weapon_name, output_dir)
         try:
             sys.stdout = output_file
-            list = show_weapon_scores(G, weapon_name, final_only=True, sharp_only=True)
+            list = show_weapon_scores(G, weapon_name, final_only, sharp_only)
             for line in list:
                 all_weapon_scores.append(line)
         finally:
             output_file.close()
 
+    if not os.path.exists(f"{output_dir}/"):
+        os.makedirs(f"{output_dir}")
     sys.stdout = open(f"{output_dir}/scores_all.txt", "w")
-    sys.stdout = stdout
+    print(f"Weapon Scores bench - Final Only: {final_only} | Max Sharpness Only: {sharp_only}")
     all_weapon_scores = sorted(all_weapon_scores, key=lambda x: x[2])
     max_name_len = max(
         len(node[1]) for node in all_weapon_scores if node[1] is not None
     )
-    for node, name, score, rarity, final, w_type, sharpness in all_weapon_scores:
+    for node, name, score, rarity, final, w_type, sharpness, attack in all_weapon_scores:
         print(
             f"{name:<{max_name_len}}:\t {score:<6}\t {rarity:<5}\t {final}\t {w_type}\t {sharpness}"
         )
-    conn.close()
+    sys.stdout = stdout
 
 
 def main_armor():
+    stdout = sys.stdout
     for armor_type in armor_types:
         if not os.path.exists(f"{output_dir}/{armor_type}"):
             os.makedirs(f"{output_dir}/{armor_type}")
 
         G, pos = make_armor_graph(armor_type)
         draw_armor_graph(G, pos, armor_type, output_dir)
+        if not os.path.exists(f"{output_dir}/{armor_type}"):
+            os.makedirs(f"{output_dir}/{armor_type}")
+        sys.stdout = open(f"{output_dir}/{armor_type}/scores.txt", "w")
         show_armor_scores(G, armor_type)
+    sys.stdout = stdout
 
 
 if __name__ == "__main__":
-    weapons_best_attack(hr_only=False)
-    # main_weapons()
-    # main_armor()
+    # weapons_best_attack(hr_only=False)
+    main_weapons(final_only=False, sharp_only=False)
+    main_armor()
     # lin_prog()
     # show_scores_for_materials()
+    # make_item_graph(115,output_dir)
+    print("end")
+    conn.close()
