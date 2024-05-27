@@ -153,13 +153,18 @@ def calculate_upgrade_scores(G):
             item_id = item[0]
             item_quantity = int(item[2])
             sources = get_all_items_list(item_id)
-            monsterEval += item_quantity * eval_monster_part(sources[0], True)
-            locationEval += item_quantity * eval_location(sources[1], True)
-            questEval += item_quantity * eval_quest_reward(sources[2], True)
+            tmpMon = eval_monster_part(sources[0], True)
+            tmpLoc = eval_location(sources[1], True)
+            tmpRew = eval_quest_reward(sources[2], True)
+            monsterEval += item_quantity * tmpMon
+            locationEval += item_quantity * tmpLoc 
+            questEval += item_quantity * tmpRew
         monsterEval = monsterEval / depsCount
         locationEval = locationEval / depsCount
         questEval = questEval / depsCount
         score = monsterEval + locationEval + questEval
+        # if error == -1:
+        #     G.nodes[node]["score"] == -1
         if G.nodes[node]["distance"] == 0:
             G.nodes[node]["upgrade_score"] = score
         else:

@@ -279,10 +279,9 @@ def main_armor():
 
 if __name__ == "__main__":
     # weapons_best_attack(hr_only=False)
-    main_weapons(final_only=False, sharp_only=False)
-    main_armor()
-    # lin_prog()
+    main_weapons(final_only=False, sharp_only=True)
+    # main_armor()
+    lin_prog()
     # show_scores_for_materials()
     # make_item_graph(115,output_dir)
-    print("end")
     conn.close()

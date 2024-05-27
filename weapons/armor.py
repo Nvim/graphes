@@ -97,8 +97,6 @@ def calculate_scores(G):
                 tmpLoc = eval_location(sources[1], True)
                 tmpRew = eval_quest_reward(sources[2], True)
                 if tmpMon + tmpLoc + tmpRew == 0:
-                    # G.nodes[node]["score"] = -1
-                    # return
                     error = -1
                 monsterEval += item_quantity * tmpMon
                 locationEval += item_quantity * tmpLoc 
